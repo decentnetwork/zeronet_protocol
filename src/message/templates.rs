@@ -147,10 +147,9 @@ pub struct GetFile {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct GetFileResponse {
-  pub body:         Option<ByteBuf>,
-  pub stream_bytes: Option<ByteBuf>,
-  pub location:     usize,
-  pub size:         usize,
+  pub body:     ByteBuf,
+  pub location: usize,
+  pub size:     usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
