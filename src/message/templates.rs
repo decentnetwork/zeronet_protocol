@@ -175,7 +175,7 @@ pub struct Pex {
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct PexResponse {
   pub peers:       Vec<ByteBuf>,
-  pub peers_ipv6:  Option<Vec<ByteBuf>>,
+  pub peers_ipv6:  Vec<ByteBuf>,
   pub peers_onion: Vec<ByteBuf>,
 }
 
