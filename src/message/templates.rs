@@ -237,7 +237,7 @@ pub struct FindHashIdsResponse {
   pub peers:       HashMap<usize, Vec<ByteBuf>>,
   pub peers_ipv6:  HashMap<usize, Vec<ByteBuf>>,
   pub peers_onion: HashMap<usize, Vec<ByteBuf>>,
-  pub my:          HashMap<usize, Vec<ByteBuf>>,
+  pub my:          Vec<usize>,
 }
 
 pub struct Checkport {
