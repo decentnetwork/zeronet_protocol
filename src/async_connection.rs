@@ -1,14 +1,16 @@
+use std::{
+  collections::HashMap,
+  future::Future,
+  io::{Read, Write},
+  pin::Pin,
+  sync::{Arc, Mutex},
+  task::{Context, Poll, Waker},
+};
+
+use decentnet_protocol::interface::Requestable;
+use serde::{de::DeserializeOwned, Serialize};
+
 use crate::error::Error;
-use crate::requestable::Requestable;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::clone::Clone;
-use std::collections::HashMap;
-use std::future::Future;
-use std::io::{Read, Write};
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
 
 pub struct SharedState<T: Requestable> {
   pub reader:   Arc<Mutex<dyn Read + Send>>,
@@ -54,8 +56,8 @@ where
       // TODO: add timeout for pending requests
 
       if let Some(value) = state.value.take() {
-        let result = rmp_serde::encode::write_named(&mut *writer, &value)
-        	.map_err(|err| Error::from(err));
+        let result =
+          rmp_serde::encode::write_named(&mut *writer, &value).map_err(|err| Error::from(err));
         state.result = Some(result);
       }
 

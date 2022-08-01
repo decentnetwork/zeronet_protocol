@@ -1,12 +1,16 @@
-use crate::async_connection::Connection;
-use crate::error::Error;
-use crate::message::{Request, Response, ZeroMessage};
-use crate::PeerAddr;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::future::Future;
-use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::{
+  future::Future,
+  io::{Read, Write},
+  sync::{Arc, Mutex},
+};
+
+use decentnet_protocol::{
+  address::PeerAddr,
+  message::{Request, RequestType, Response, ResponseType, ZeroMessage},
+  templates::Handshake,
+};
+
+use crate::{async_connection::Connection, error::Error};
 
 pub struct ZeroConnection {
   /// A ZeroNet Protocol connection
@@ -18,14 +22,17 @@ pub struct ZeroConnection {
   /// ```no_run
   /// use std::net::{TcpStream, TcpListener};
   /// use futures::executor::block_on;
-  ///	use zeronet_protocol::{ZeroConnection, ZeroMessage, PeerAddr};
+  ///	use zeronet_protocol::{ZeroConnection};
+  ///	use decentnet_protocol::{address::PeerAddr, message::ZeroMessage};
+  /// use decentnet_protocol::message::ResponseType;
+  /// use decentnet_protocol::templates::PingResponse;
   ///
   /// fn handle_connection(stream: TcpStream) {
   ///		let mut connection = ZeroConnection::new(Box::new(stream.try_clone().unwrap()), Box::new(stream)).unwrap();
   ///		let request = block_on(connection.recv()).unwrap();
   ///
-  ///		let body = "anything serializable".to_string();
-  ///		block_on(connection.respond(request.req_id, body));
+  ///		let body = "Pong!".to_string();
+  ///		block_on(connection.respond(request.req_id, ResponseType::Ping(PingResponse{body}))).unwrap();
   /// }
   ///
   /// fn main() {
@@ -84,14 +91,16 @@ impl ZeroConnection {
       let address = PeerAddr::parse(address)?;
       let mut connection = ZeroConnection::from_address(address.clone()).unwrap();
 
-      let mut body = crate::message::templates::Handshake::default();
+      let mut body = Handshake::default();
       body.target_address = Some(address.to_string());
       // TODO:
       // - by default peer_id should be empty string
       // - peer_id is only generated for clearnet peers
       body.peer_id = String::new();
 
-      let _resp = connection.request("handshake", body).await?;
+      let _resp = connection
+        .request("handshake", RequestType::Handshake(body))
+        .await?;
       // TODO: update the connection with information from the handshake
       // - peer_id
       // - port
@@ -121,10 +130,10 @@ impl ZeroConnection {
   /// Respond to a request.
   /// The `body` variable is flattened into the ZeroMessage,
   /// therefore it should be an object, a map or a pair.
-  pub fn respond<T: DeserializeOwned + Serialize>(
+  pub fn respond(
     &mut self,
     to: usize,
-    body: T,
+    body: ResponseType,
   ) -> impl Future<Output = Result<(), Error>> {
     let message = ZeroMessage::response(to, body);
     self.connection.send(message)
@@ -135,10 +144,10 @@ impl ZeroConnection {
   /// and attempt to decode valid ZeroMessages.
   /// The future returns the first Response that
   /// has the corresponding `to` field.
-  pub fn request<T: DeserializeOwned + Serialize>(
+  pub fn request(
     &mut self,
     cmd: &str,
-    body: T,
+    body: RequestType,
   ) -> impl Future<Output = Result<Response, Error>> {
     let message = ZeroMessage::request(cmd, self.req_id(), body);
     let result = self.connection.request(message);
@@ -162,146 +171,5 @@ impl ZeroConnection {
     let mut next_req_id = self.next_req_id.lock().unwrap();
     *next_req_id += 1;
     *next_req_id - 1
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::ZeroConnection;
-  use crate::ZeroMessage;
-  use futures::executor::block_on;
-  use std::{
-    io::{Error, ErrorKind, Read, Result, Write},
-    sync::mpsc::{channel, Receiver, Sender},
-  };
-
-  struct ChannelWriter {
-    tx:     Sender<Vec<u8>>,
-    buffer: Option<Vec<u8>>,
-  }
-
-  impl ChannelWriter {
-    fn new(tx: Sender<Vec<u8>>) -> ChannelWriter {
-      ChannelWriter { tx, buffer: None }
-    }
-  }
-
-  impl Write for ChannelWriter {
-    fn write(&mut self, buf: &[u8]) -> Result<usize> {
-      let mut buffer = match self.buffer.take() {
-        Some(buffer) => buffer,
-        None => vec![],
-      };
-      buffer.append(&mut buf.to_vec());
-      self.buffer = Some(buffer);
-
-      // TODO: rmp-serde does not flush the write
-      // remove this once this is corrected
-      self.flush()?;
-
-      return Ok(buf.len());
-    }
-
-    fn flush(&mut self) -> Result<()> {
-      if let Some(buffer) = self.buffer.take() {
-        self
-          .tx
-          .send(buffer)
-          .map_err(|_| Error::new(ErrorKind::NotConnected, "Could not send on channel"))?;
-      }
-      Ok(())
-    }
-  }
-
-  struct ChannelReader {
-    rx:     Receiver<Vec<u8>>,
-    buffer: Option<Vec<u8>>,
-  }
-
-  impl ChannelReader {
-    fn new(rx: Receiver<Vec<u8>>) -> ChannelReader {
-      ChannelReader { rx, buffer: None }
-    }
-  }
-
-  impl Read for ChannelReader {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-      let mut buffer = match self.buffer.take() {
-        Some(buffer) => buffer,
-        None => vec![],
-      };
-      while let Ok(mut res) = self.rx.try_recv() {
-        buffer.append(&mut res);
-      }
-      if buffer.len() == 0 {
-        return Err(Error::from(ErrorKind::Interrupted));
-      }
-      let length = std::cmp::min(buf.len(), buffer.len());
-      let mut iterator = buffer.into_iter();
-      for i in 0..length {
-        if let Some(byte) = iterator.next() {
-          buf[i] = byte;
-        }
-      }
-      self.buffer = Some(iterator.collect());
-      Ok(length)
-    }
-  }
-
-  fn create_pair() -> (ZeroConnection, ZeroConnection) {
-    let (tx1, rx1) = channel();
-    let (tx2, rx2) = channel();
-    let conn1 = ZeroConnection::new(
-      Box::new(ChannelReader::new(rx2)),
-      Box::new(ChannelWriter::new(tx1)),
-    );
-    let conn2 = ZeroConnection::new(
-      Box::new(ChannelReader::new(rx1)),
-      Box::new(ChannelWriter::new(tx2)),
-    );
-    (conn1.unwrap(), conn2.unwrap())
-  }
-
-  #[test]
-  fn test_connection() {
-    let (mut server, mut client) = create_pair();
-    let request = client.request("ping", String::new());
-    std::thread::spawn(move || {
-      block_on(request).unwrap();
-    });
-    let request = block_on(server.recv());
-    assert!(request.is_ok());
-  }
-
-  #[test]
-  fn multiple_receivers() {
-    let (mut server1, mut client) = create_pair();
-    let mut server2 = server1.clone();
-
-    std::thread::spawn(move || {
-      block_on(client.connection.send(ZeroMessage::request("ping", 0, ()))).unwrap();
-      block_on(client.connection.send(ZeroMessage::request("ping", 1, ()))).unwrap();
-      block_on(client.connection.send(ZeroMessage::request("ping", 2, ()))).unwrap();
-      block_on(client.connection.send(ZeroMessage::request("ping", 3, ()))).unwrap();
-    });
-    std::thread::spawn(move || {
-      block_on(server1.recv()).ok().unwrap();
-      block_on(server1.recv()).ok().unwrap();
-    });
-    block_on(server2.recv()).ok().unwrap();
-    let result = block_on(server2.recv());
-    assert!(result.is_ok());
-  }
-
-  #[test]
-  fn multiple_clients() {
-    let (mut server, mut client1) = create_pair();
-    let client2 = client1.clone();
-
-    std::thread::spawn(move || {
-      block_on(client1.request("ping", ())).unwrap();
-    });
-    let result = block_on(server.recv()).ok().unwrap();
-    assert!(result.req_id == client2.last_req_id());
   }
 }
