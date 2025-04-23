@@ -84,6 +84,14 @@ impl ZeroConnection {
     Ok(conn)
   }
 
+  /// Creates a new ZeroConnection from a given address
+  pub async fn from_address_async(address: PeerAddr) -> Result<ZeroConnection, Error> {
+    let (reader, writer) = address.get_pair_async().await?;
+    let mut conn = ZeroConnection::new(reader, writer)?;
+    conn.target_address = Some(address);
+    Ok(conn)
+  }
+
   /// Connect to an ip and port and perform the handshake,
   /// then return the ZeroConnection.
   pub fn connect(address: String) -> impl Future<Output = Result<ZeroConnection, Error>> {
