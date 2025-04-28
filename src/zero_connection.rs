@@ -4,6 +4,8 @@ use std::{
   sync::{Arc, Mutex},
 };
 
+use tokio::time::{timeout, Duration};
+
 use decentnet_protocol::{
   address::PeerAddr,
   message::{Request, RequestType, Response, ResponseType, ZeroMessage},
@@ -11,6 +13,26 @@ use decentnet_protocol::{
 };
 
 use crate::{async_connection::Connection, error::Error};
+
+#[derive(Debug, Clone)]
+pub struct ConnectionCfg {
+  /// Timeout for the connection in seconds default to 10
+  pub timeout:      u64,
+  /// Timeout for the ping in seconds default to 10
+  pub timeout_ping: u64,
+  /// Timeout for the request in seconds default to 10
+  pub timeout_req:  u64,
+}
+
+impl Default for ConnectionCfg {
+  fn default() -> Self {
+    Self {
+      timeout:      10,
+      timeout_ping: 10,
+      timeout_req:  10,
+    }
+  }
+}
 
 pub struct ZeroConnection {
   /// A ZeroNet Protocol connection
@@ -48,6 +70,7 @@ pub struct ZeroConnection {
   pub connection:     Connection<ZeroMessage>,
   pub next_req_id:    Arc<Mutex<usize>>,
   pub target_address: Option<PeerAddr>,
+  pub cfg:            ConnectionCfg,
 }
 
 impl Clone for ZeroConnection {
@@ -56,6 +79,7 @@ impl Clone for ZeroConnection {
       connection:     self.connection.clone(),
       next_req_id:    self.next_req_id.clone(),
       target_address: self.target_address.clone(),
+      cfg:            self.cfg.clone(),
     }
   }
 }
@@ -65,12 +89,14 @@ impl ZeroConnection {
   pub fn new(
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
+    cfg: Option<ConnectionCfg>,
   ) -> Result<ZeroConnection, Error> {
     let conn = Connection::new(reader, writer);
     let conn = ZeroConnection {
       connection:     conn,
       next_req_id:    Arc::new(Mutex::new(0)),
       target_address: None,
+      cfg:            cfg.unwrap_or_default(),
     };
 
     Ok(conn)
@@ -79,17 +105,29 @@ impl ZeroConnection {
   /// Creates a new ZeroConnection from a given address
   pub fn from_address(address: PeerAddr) -> Result<ZeroConnection, Error> {
     let (reader, writer) = address.get_pair()?;
-    let mut conn = ZeroConnection::new(reader, writer)?;
+    let mut conn = ZeroConnection::new(reader, writer, None)?;
     conn.target_address = Some(address);
     Ok(conn)
   }
 
   /// Creates a new ZeroConnection from a given address
-  pub async fn from_address_async(address: PeerAddr) -> Result<ZeroConnection, Error> {
-    let (reader, writer) = address.get_pair_async().await?;
-    let mut conn = ZeroConnection::new(reader, writer)?;
-    conn.target_address = Some(address);
-    Ok(conn)
+  pub async fn from_address_async(
+    address: PeerAddr,
+    cfg: Option<ConnectionCfg>,
+  ) -> Result<ZeroConnection, Error> {
+    let cfg = cfg.unwrap_or_default();
+    let duration = Duration::from_secs(cfg.timeout_ping);
+    if let Ok(res) = timeout(duration, address.get_pair_async()).await {
+      if let Ok((reader, writer)) = res {
+        let mut conn = ZeroConnection::new(reader, writer, Some(cfg))?;
+        conn.target_address = Some(address);
+        Ok(conn)
+      } else {
+        Err(Error::ConnectionFailure)
+      }
+    } else {
+      Err(Error::ConnectionTimeout)
+    }
   }
 
   /// Connect to an ip and port and perform the handshake,
@@ -158,13 +196,16 @@ impl ZeroConnection {
     body: RequestType,
   ) -> impl Future<Output = Result<Response, Error>> {
     let message = ZeroMessage::request(cmd, self.req_id(), body);
-    let result = self.connection.request(message);
+    let result = timeout(
+      Duration::from_secs(self.cfg.timeout_req),
+      self.connection.request(message),
+    );
 
     return async {
       match result.await {
-        Err(err) => Err(err),
-        Ok(ZeroMessage::Response(res)) => Ok(res),
-        Ok(ZeroMessage::Request(_)) => Err(Error::UnexpectedRequest),
+        Err(err) => Err(err.into()),
+        Ok(Ok(ZeroMessage::Response(res))) => Ok(res),
+        _ => Err(Error::UnexpectedRequest),
       }
     };
   }

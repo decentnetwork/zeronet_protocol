@@ -1,4 +1,3 @@
-
 use std::{
   io::{Error, ErrorKind, Read, Result, Write},
   sync::mpsc::{channel, Receiver, Sender},
@@ -91,10 +90,12 @@ fn create_pair() -> (ZeroConnection, ZeroConnection) {
   let conn1 = ZeroConnection::new(
     Box::new(ChannelReader::new(rx2)),
     Box::new(ChannelWriter::new(tx1)),
+    None,
   );
   let conn2 = ZeroConnection::new(
     Box::new(ChannelReader::new(rx1)),
     Box::new(ChannelWriter::new(tx2)),
+    None,
   );
   (conn1.unwrap(), conn2.unwrap())
 }

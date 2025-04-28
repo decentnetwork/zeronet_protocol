@@ -8,6 +8,8 @@ pub enum Error {
   InvalidMessagePack(#[from] rmp_serde::decode::Error),
   #[error("Could not encode MessagePack: `{0}`")]
   EncodeRMPError(#[from] rmp_serde::encode::Error),
+  #[error("Error connecting: Timeout Error")]
+  ConnectionTimeout,
   #[error("Error connecting to peer")]
   ConnectionFailure,
   #[error("Connection is closed")]
@@ -53,5 +55,11 @@ impl From<decentnet_protocol::address::ParseError> for Error {
 impl From<decentnet_protocol::address::AddressError> for Error {
   fn from(error: decentnet_protocol::address::AddressError) -> Error {
     Error::Other(error.to_string())
+  }
+}
+
+impl From<tokio::time::error::Elapsed> for Error {
+  fn from(_: tokio::time::error::Elapsed) -> Error {
+    Error::ConnectionTimeout
   }
 }
